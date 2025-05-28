@@ -1,181 +1,127 @@
-# ========== CONFIGURATION ==========
-$ISOName       = "Win11.iso"
-$TempISOPath   = "c:\temp\$ISOName"
-$CDNUrl        = "https://software.download.prss.microsoft.com/dbazure/Win11_24H2_English_x64.iso?t=c7cef539-b39d-492d-b2b7-4c19351611d9&P1=1748505633&P2=601&P3=2&P4=Nmwnaw%2fVvDCMUBvQBiPOGQ36R0uqISz0vSVz%2fMbYDayVzIR8%2fn5tve0E2456tuQPnxPjOZ5eF6e%2bUBwQSWD6Q%2f1S25YaVl%2fJsHeFMGI%2bQH0zdawGvcdj00AgxO%2f7AkStl%2fIbLCq3AZRwYdAifFicQ%2bdnu7YjZ3aJAa5%2bVUupk2o7EYOihpXLvgYmgCVYzv5NsSwDc0maOLnIFr7JInI0ltEih6UtOvbnfNEykQPQq2tpE7Rv1GOqJZP3kSegX4bWCr9ig82By%2f%2fGpktWs84Xvd4AYmflZ%2fNiM2ljEdoX79WP9iy6TAbIC5JRaBC%2bZLUC5Jz6mHyMcIoFeTIrkWwJ4g%3d%3d"
-$ExpectedHash  = "B56B911BF18A2CEAEB3904D87E7C770BDF92D3099599D61AC2497B91BF190B11"  # SHA256 (optional)
-$LogPath       = "C:\Temp\logs"
-$SetupArgs     = "/auto upgrade /dynamicupdate disable /eula accept /product server"
-# ===================================
+<#
+.SYNOPSIS
+    Silent Windows-11 in-place upgrade on unsupported hardware
+    with automatic resume after the mandatory language-change reboot.
 
-function Write-Log {
-    param ([string]$Message, [string]$Level = "INFO")
-    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logLine = "[$ts] [$Level] $Message"
-    Write-Host $logLine
+.NOTES
+    - Deploy/run from RMM as SYSTEM
+    - Exit-codes:
+        0      = Upgrade launched (or completed in quiet mode)
+        3010   = Reboot scheduled via Windows Restart-Computer
+        other  = Windows Setup return code (failure)
+#>
 
-    if (-not (Test-Path $LogPath)) {
-        New-Item -Path $LogPath -ItemType Directory -Force | Out-Null
-    }
+# ------------ configuration ------------
+$IsoUrl      = 'https://software-download.microsoft.com/sg/Win11_24H2_EnglishInternational_x64.iso'
+$TempRoot    = "$env:SystemDrive\Temp\Win11Upgrade"
+$Unattend    = "$TempRoot\Upgrade.xml"
+$IsoPath     = "$TempRoot\win11.iso"
+$LabConfig   = 'HKLM:\SYSTEM\Setup\LabConfig'
+$MoSetup     = 'HKLM:\SYSTEM\Setup\MoSetup'
+$SetupScript = "$env:SystemRoot\Setup\Scripts"
+$TaskName    = 'Win11Upgrade-Resume'
+# ---------------------------------------
 
-    Add-Content -Path "$LogPath\Upgrade.log" -Value $logLine
+function Write-Log { param([string]$Msg) ; Write-Host "$(Get-Date -f s)  $Msg" }
+function Ensure-Dir { param($Path) ; if (-not (Test-Path $Path)) { New-Item $Path -ItemType Directory -Force | Out-Null } }
+
+Ensure-Dir $TempRoot
+
+# 0. Remove resume task if we were launched by it
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Log "Removed scheduled resume task."
 }
 
-function Test-IsMeteredConnection {
-    $connections = Get-NetConnectionProfile | Where-Object { $_.IPv4Connectivity -ne "Disconnected" }
-
-    if (-not $connections) {
-        Write-Log "No active network connections found. Assuming safe to proceed." "WARN"
-        return $false
-    }
-
-    foreach ($conn in $connections) {
-        $cost = $conn.ConnectionCost
-
-        if ([string]::IsNullOrWhiteSpace($cost)) {
-            Write-Log "No ConnectionCost info for '$($conn.InterfaceAlias)'. Assuming unrestricted." "WARN"
-            continue
-        }
-
-        if ($cost -in @("Metered", "OverDataLimit", "ApproachingDataLimit")) {
-            Write-Log "Metered connection detected on '$($conn.InterfaceAlias)' - upgrade aborted." "ERROR"
-            return $true
-        }
-    }
-
-    return $false
-}
-
-function Set-BypassRegistry {
-    Write-Log "Setting LabConfig bypass registry keys..."
-    try {
-        New-Item -Path "HKLM:\SYSTEM\Setup\LabConfig" -Force | Out-Null
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassTPMCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassSecureBootCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassCPUCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassRAMCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassStorageCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassDiskCheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassWGACheck" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SYSTEM\Setup\LabConfig" -Name "BypassAppraiser" -Type DWord -Value 1
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State" -Name "ImageState" -Value "IMAGE_STATE_COMPLETE"
-        Write-Log "Bypass keys successfully set." "SUCCESS"
-    }
-    catch {
-        Write-Log "Failed to set bypass keys: $_" "ERROR"
-        exit 1
-    }
-}
-
-function Validate-ISO {
-    if (-not (Test-Path $TempISOPath)) { return $false }
-
-    if ($ExpectedHash -ne "") {
-        Write-Log "Validating ISO hash..."
-        $actualHash = (Get-FileHash -Path $TempISOPath -Algorithm SHA256).Hash
-        if ($actualHash -ne $ExpectedHash) {
-            Write-Log "ISO hash mismatch. Expected $ExpectedHash, got $actualHash" "ERROR"
-            Remove-Item $TempISOPath -Force
-            return $false
-        }
-        Write-Log "ISO hash validated successfully." "SUCCESS"
-    }
-
-    return $true
-}
-
-function Download-ISO {
-    Write-Log "Attempting to download ISO from $CDNUrl..."
-    try {
-        Invoke-WebRequest -Uri $CDNUrl -OutFile $TempISOPath -UseBasicParsing
-        Write-Log "ISO downloaded to $TempISOPath" "SUCCESS"
-        return $true
-    }
-    catch {
-        Write-Log "Failed to download ISO: $_" "ERROR"
-        return $false
-    }
-}
-
-function Mount-And-Upgrade {
-    Write-Log "Mounting ISO..."
-    try {
-        Mount-DiskImage -ImagePath $TempISOPath -ErrorAction Stop
-        $volume = (Get-DiskImage -ImagePath $TempISOPath | Get-Volume).DriveLetter + ":"
-    }
-    catch {
-        Write-Log "Failed to mount ISO: $_" "ERROR"
-        exit 1
-    }
-
-    $setup = Join-Path $volume "setup.exe"
-    if (-not (Test-Path $setup)) {
-        Write-Log "setup.exe not found in mounted ISO!" "ERROR"
-        exit 1
-    }
-
-    Write-Log "Launching Windows 11 setup..."
-    Start-Process -FilePath $setup -ArgumentList $SetupArgs -WorkingDirectory $volume -Wait
-    Write-Log "Setup launched successfully." "SUCCESS"
-}
-
-function Match-Language-to-ISO {
-    $currentDisplayLang = Get-WinUILanguageOverride
-    $installedLangs = Get-InstalledLanguage
-
-    if ($installedLangs.Language -contains 'en-US' -and $currentDisplayLang -eq 'en-US') {
-     Write-Host "en-US is already installed and set as the display language. No action needed."
-        } else {
-        Install-Language en-US -CopyToSettings
+# 1. Language check and schedule CHKDSK
+$NeedReboot = $false
+try {
+    $sysLang = (Get-Culture).Name
+    if ($sysLang -ne 'en-US') {
+        Write-Log "System UI language is $sysLang. Switching to en-US."
+        Install-Language en-US -CopyToSettings -Force
         Set-WinUILanguageOverride -Language en-US
-        Set-WinUserLanguageList -LanguageList (New-WinUserLanguageList -Language en-US) -Force
-        Write-Host "en-US installed and set as the display language. Reboot required."
+        Set-WinSystemLocale       -SystemLocale en-US
+        $NeedReboot = $true
     }
+} catch { Write-Log "WARNING: Language change failed - $_" }
+
+if ($NeedReboot) {
+    # Register one-shot resume task
+    $psSelf = '"' + $PSCommandPath + '"'
+    $action  = New-ScheduledTaskAction  -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File $psSelf"
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User 'SYSTEM' -Force | Out-Null
+
+    # Mark C: dirty so CHKDSK /F runs before Windows loads
+    try {
+        Write-Log "Scheduling CHKDSK /F via fsutil dirty set C:."
+        fsutil dirty set C: | Out-Null
+    } catch { Write-Log "WARNING: Could not set dirty bit - $_" }
+
+    Write-Log "Rebooting now. Script will resume afterwards."
+    Restart-Computer -Force
+    exit 3010
 }
 
-
-# === SCRIPT ENTRY POINT ===
-
-function Test-IsElevated {
-    if ($PSVersionTable.PSEdition -eq 'Core') {
-        # PowerShell 7+ compatible
-        $adminCheck = [System.Environment]::UserInteractive -and `
-                      ([System.Security.Principal.WindowsPrincipal] `
-                          [System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(`
-                          [System.Security.Principal.WindowsBuiltInRole]::Administrator)
-        return $adminCheck
-    } else {
-        # Windows PowerShell 5.1
-        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-        $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
-        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    }
+# 2. Download ISO if missing
+if (-not (Test-Path $IsoPath)) {
+    Write-Log "Downloading ISO ..."
+    Invoke-WebRequest $IsoUrl -OutFile $IsoPath -UseBasicParsing
 }
 
-if (-not (Test-IsElevated)) {
-    Write-Host "[ERROR] Script must be run as Administrator."
-    exit 1
+# 3. Registry bypass keys
+Write-Log "Writing LabConfig and MoSetup keys ..."
+Ensure-Dir (Split-Path $LabConfig)
+foreach ($name in 'BypassTPMCheck','BypassSecureBootCheck','BypassCPUCheck','BypassRAMCheck','BypassStorageCheck','BypassNetworkCheck') {
+    New-ItemProperty $LabConfig -Name $name -Value 1 -PropertyType DWord -Force | Out-Null
 }
+Ensure-Dir (Split-Path $MoSetup)
+New-ItemProperty $MoSetup -Name 'AllowUpgradesWithUnsupportedTPMOrCPU' -Value 1 -PropertyType DWord -Force | Out-Null
 
-Write-Log "==== Windows 11 Upgrade Started ===="
+# 4. Unattend file to suppress all UI
+@'
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UpgradeData>
+        <Upgrade>true</Upgrade>
+        <WillShowUI>Never</WillShowUI>
+      </UpgradeData>
+    </component>
+  </settings>
+</unattend>
+'@ | Out-File $Unattend -Encoding ASCII -Force
 
-# Try existing local ISO
-#if (Validate-ISO) {
-#    Write-Log "Valid ISO already present." "INFO"
-#
-#}
+# 5. Mount ISO and launch Setup
+Write-Log "Mounting ISO ..."
+$mount  = Mount-DiskImage -ImagePath $IsoPath -PassThru
+$volume = ($mount | Get-Volume).DriveLetter + ':'
+$setup  = "$volume\setup.exe"
 
-# Download from web
-if (-not (Test-IsMeteredConnection)) {
-    if (-not (Download-ISO)) {
-        Write-Log "Download failed. Aborting upgrade." "ERROR"
-        exit 1
-    }
-}
-else {
-    Write-Log "No ISO available and metered connection detected. Aborting." "ERROR"
-    exit 1
-}
+$setupArgs = @(
+    '/quiet','/noreboot',
+    '/eula','accept',
+    '/dynamicupdate','disable',
+    '/Compat','IgnoreWarning',
+    "/Unattend:`"$Unattend`""
+)
 
-Match-Language-to-ISO
-Set-BypassRegistry
-Mount-And-Upgrade
+Write-Log "Starting Windows Setup ..."
+Start-Process $setup -ArgumentList $setupArgs -Wait
+$exit = $LASTEXITCODE
+Write-Log "Setup finished with exit code $exit"
+
+# 6. SetupComplete cleanup
+Ensure-Dir $SetupScript
+@"
+@echo off
+rd /s /q "$TempRoot" >nul 2>&1
+reg delete "$LabConfig" /f >nul 2>&1
+reg delete "$MoSetup" /v AllowUpgradesWithUnsupportedTPMOrCPU /f >nul 2>&1
+schtasks /Delete /TN "$TaskName" /F >nul 2>&1
+exit /b 0
+"@ | Out-File "$SetupScript\SetupComplete.cmd" -Encoding ASCII -Force
+
+exit $exit
