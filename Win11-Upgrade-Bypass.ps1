@@ -165,7 +165,7 @@ Write-Log "==== Windows 11 Upgrade Started ===="
 #}
 
 # Download from web
-elseif (-not (Test-IsMeteredConnection)) {
+if (-not (Test-IsMeteredConnection)) {
     if (-not (Download-ISO)) {
         Write-Log "Download failed. Aborting upgrade." "ERROR"
         exit 1
