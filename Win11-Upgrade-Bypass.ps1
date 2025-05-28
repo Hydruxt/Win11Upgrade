@@ -1,7 +1,7 @@
 # ========== CONFIGURATION ==========
 $ISOName       = "Win11.iso"
 $TempISOPath   = "c:\temp\$ISOName"
-$CDNUrl        = "https://software.download.prss.microsoft.com/dbazure/Win11_24H2_English_x64.iso?t=553d31f8-aff2-4496-9eba-e0b9562e7158&P1=1748329687&P2=601&P3=2&P4=bi6LW%2bGXrgCECfNyekGNvyLZty7M7nkefd52gYeaSodDXcvOKvlNP2Vdcq6b7Ge4KKYZffNdBTPeMoHNhSKB8HCwLkgLnd5zajkXrN4PdzVQQUmZCPXb65hZs5uUmGPs3g7e0efLqI2z3iGTShnHO%2f6kKN7sORhvlpcnzr6vIBdz2zSUWyBCeT1M%2fj%2fRda3BNpiSoTdkRYt9i2K%2bVCvI%2bubJu%2fKDhLciwAP9aK89zagNiPXl3lZJF5oDoduy9zvTqUntaNCrKw%2fQKcDLH1MkpUweBe%2bcYlLUQO%2b6d8KMhnfECRgu18Q3Hp5oRBfWHUUqYUEAUixnocetaFnxOpsNzw%3d%3d"
+$CDNUrl        = "https://software.download.prss.microsoft.com/dbazure/Win11_24H2_English_x64.iso?t=c7cef539-b39d-492d-b2b7-4c19351611d9&P1=1748505633&P2=601&P3=2&P4=Nmwnaw%2fVvDCMUBvQBiPOGQ36R0uqISz0vSVz%2fMbYDayVzIR8%2fn5tve0E2456tuQPnxPjOZ5eF6e%2bUBwQSWD6Q%2f1S25YaVl%2fJsHeFMGI%2bQH0zdawGvcdj00AgxO%2f7AkStl%2fIbLCq3AZRwYdAifFicQ%2bdnu7YjZ3aJAa5%2bVUupk2o7EYOihpXLvgYmgCVYzv5NsSwDc0maOLnIFr7JInI0ltEih6UtOvbnfNEykQPQq2tpE7Rv1GOqJZP3kSegX4bWCr9ig82By%2f%2fGpktWs84Xvd4AYmflZ%2fNiM2ljEdoX79WP9iy6TAbIC5JRaBC%2bZLUC5Jz6mHyMcIoFeTIrkWwJ4g%3d%3d"
 $ExpectedHash  = "B56B911BF18A2CEAEB3904D87E7C770BDF92D3099599D61AC2497B91BF190B11"  # SHA256 (optional)
 $LogPath       = "C:\Temp\logs"
 $SetupArgs     = "/auto upgrade /dynamicupdate disable /eula accept /product server"
